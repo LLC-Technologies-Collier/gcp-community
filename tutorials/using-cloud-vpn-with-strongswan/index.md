@@ -22,7 +22,7 @@ overview of IPsec and assumes basic familiarity with the IPsec protocol.
 The equipment used in the creation of this guide is as follows:
 
 * Vendor: strongSwan
-* Software release: 5.5.1 on Debian 9.6
+* Software release: 5.9.1 on Debian 11
 
 ## Topology
 
@@ -46,9 +46,7 @@ To use a strongSwan with Cloud VPN make sure the following prerequisites have be
 
 ## IPsec parameters
 
-Cloud VPN supports an extensive
-[list](https://cloud.google.com/network-connectivity/docs/vpn/concepts/supported-ike-ciphers)
-of ciphers that can be used per your security policies. The following parameters and
+Cloud VPN supports an extensive [list](https://cloud.google.com/network-connectivity/docs/vpn/concepts/supported-ike-ciphers) of ciphers that can be used per your security policies. The following parameters and
 values are used in the Gateway’s IPsec configuration for the purpose of this guide.
 
 |Parameter | Value|
@@ -118,14 +116,14 @@ To configure Cloud VPN:
 
 ## Configuration of strongSwan
 
-To install strongSwan on Debian 9.6 or Ubuntu 18.04, use the following commands:
+To install strongSwan on Debian 11 or Ubuntu 22.04, use the following commands:
 
     sudo apt update
     sudo apt install strongswan strongswan-pki
 
-To install strongSwan on RHEL 7 or CentOS 7, use the following command:
+To install strongSwan on RHEL 9, CentOS 9, or Rocky 8, or Rocky 9, use the following command:
 
-    yum install strongswan
+    dnf install storngswan
 
 **Step 1**: Ensure that IP forwarding is enabled
 
@@ -140,9 +138,9 @@ To temporary enable it (until reboot), you can use following command:
 
     sysctl -w net.ipv4.ip_forward=1
 
-To make changes permanent, you should add a line to sysctl.conf:
+To make changes permanent, you should create a file in `/etc/sysctl.d/`:
 
-**/etc/sysctl.d/99-forwarding.conf**:
+**/etc/sysctl.d/100-strongswan-ipforwarding.conf**:
 
     net.ipv4.ip_forward = 1
 
@@ -150,46 +148,50 @@ To make changes permanent, you should add a line to sysctl.conf:
 
 Ensure that the following line present in file:
 
-**/var/lib/strongswan/ipsec.secrets.inc**
+**/etc/swanctl/conf.d/gcp-secrets.conf**
 
-    35.204.151.163 : PSK "secret"
+    secrets {
+    	ike-gcp {
+    		id-1 = "34.204.151.163"
+    		secret = "secret"
+    	}
+    }
 
 **Step 3**: Configure the IPSec connection
 
-**/var/lib/strongswan/ipsec.conf.inc**
+**/etc/swanctl/conf.d/gcp-vpn.conf**
 
-    include /etc/ipsec.d/gcp.conf
+    connections {
+    	gcp-net-net {
+    		remote_addrs = 35.204.151.163
+    		local  {
+    			auth = psk
+    			id = %any
+    		}
+    		remote {
+    			auth = psk
+    			id = 35.204.151.163
+    		}
+    		mobike=no
+    		proposals = aes256gcm16-prfsha512-modp4096
+    		keyingtries = 3
+    		rekey_time = 600m
+    		if_id_in = %unique
+    		if_it_out = %unique
+    		dpd_action = restart
+    		children {
+    			gcp-net-net {
+    				rekey_time = 180m
+    				remote_ts = 192.168.0.0/24
+    				local_ts = 10.164.0.0/20
+    				esp_proposals = aes256gcm16-modp8192
+    				start_action = trap
+    				updown = /etc/swanctl/scripts/xfrm-updown.sh
+                }
+    		}
+    	}
+    }
 
-**/etc/ipsec.d/gcp.conf**
-
-    conn %default
-        ikelifetime=600m # 36,000 s
-        keylife=180m # 10,800 s
-        rekeymargin=3m
-        keyingtries=3
-        keyexchange=ikev2
-        mobike=no
-        ike=aes256gcm16-sha512-modp4096
-        esp=aes256gcm16-sha512-modp8192
-        authby=psk
-
-    conn net-net
-        left=35.204.200.153 # In case of NAT set to internal IP, e.x. 10.164.0.6
-        leftid=35.204.200.153
-        leftsubnet=10.164.0.0/20
-        leftauth=psk
-        right=35.204.151.163
-        rightid=35.204.151.163
-        rightsubnet=192.168.0.0/24
-        rightauth=psk
-        type=tunnel
-        # auto=add - means strongSwan won't try to initiate it
-        # auto=start - means strongSwan will try to establish connection as well
-        # Note that Google Cloud will also try to initiate the connection
-        auto=start
-        # dpdaction=restart - means strongSwan will try to reconnect if Dead Peer Detection spots
-        #                  a problem. Change to 'clear' if needed
-        dpdaction=restart
 
 **Step 4**: Start strongSwan
 
@@ -203,8 +205,8 @@ After you make sure it's working as expected, you can add strongSwan to autostar
 
 # Configuring a dynamic (BGP) IPsec VPN tunnel with strongSwan and BIRD
 
-In this example, a dynamic BGP-based VPN uses a VTI interface. This guide is based
-on the official [strongSwan wiki](https://wiki.strongswan.org/projects/strongswan/wiki/RouteBasedVPN#VTI-Devices-on-Linux).
+In this example, a dynamic BGP-based VPN uses a XFRM interface. This guide is based
+on the official [strongSwan wiki](https://docs.strongswan.org/docs/5.9/features/routeBasedVpn.html#_xfrm_interfaces_on_linux).
 
 The following sample environment walks you through set up of a route-based VPN. Make sure
 to replace the IP addresses in the sample environment with your own IP addresses.
@@ -299,20 +301,20 @@ This guide assumes that you have strongSwan already installed. It also assumes a
 
     # Config example for bird 1.6 
     #debug protocols all;
-
+    
     router id 169.254.2.2;
-
+    
     # Watch interface up/down events
     protocol device {
            scan time 10;
     }
-
+    
     # Import interface routes (Connected)
     # (Not required in this example as kernel import all is used here to workaround the /32 on eth0 GCE VM setup)
     #protocol direct {
     #       interface "*";
     #}
-
+    
     # Sync routes to kernel
     protocol kernel {
            learn;
@@ -323,7 +325,7 @@ This guide assumes that you have strongSwan already installed. It also assumes a
            };
            import all; # Required due to /32 on GCE VMs for the static route below
     }
-
+    
     # Configure a static route to make sure route exists
     protocol static {
            # Network connected to eth0
@@ -331,55 +333,43 @@ This guide assumes that you have strongSwan already installed. It also assumes a
            # Or blackhole the aggregate
            # route 10.164.0.0/20 blackhole; 
     }
-
+    
     # Prefix lists for routing security
     # (Accept /24 as the most specific route)
     define GCP_VPC_A_PREFIXES = [ 192.168.0.0/16{16,24} ]; # VPC A address space
     define LOCAL_PREFIXES     = [ 10.164.0.0/16{16,24} ];  # Local address space
-
+    
     # Filter received prefixes
     filter gcp_vpc_a_in
     {
           if (net ~ GCP_VPC_A_PREFIXES) then accept;
           else reject;
     }
-
+    
     # Filter advertised prefixes
     filter gcp_vpc_a_out
     {
           if (net ~ LOCAL_PREFIXES) then accept;
           else reject;
     }
-
+    
     template bgp gcp_vpc_a {
            keepalive time 20;
            hold time 60;
            graceful restart aware; # Cloud Router uses GR during maintenance
            #multihop 3; # Required for Dedicated/Partner Interconnect
-
+    
            import filter gcp_vpc_a_in;
            import limit 10 action warn; # restart | block | disable
-
+    
            export filter gcp_vpc_a_out;
            export limit 10 action warn; # restart | block | disable
     }
-
+    
     protocol bgp gcp_vpc_a_tun1 from gcp_vpc_a
     {
            local 169.254.2.2 as 65002;
            neighbor 169.254.2.1 as 65000;
-    }
-
-
-**Step 2**: Disable automatic routes in strongSwan
-
-Routes are handled by BIRD, so you must disable automatic route creation in strongSwan.
-
-**/etc/strongswan.d/vti.conf**
-
-    charon {
-        # We will handle routes by ourselves
-        install_routes = no
     }
 
 
@@ -394,35 +384,35 @@ interface configuration, including MTU, etc.
     #!/bin/bash
     set -o nounset
     set -o errexit
-
+    
     IP=$(which ip)
     
     PLUTO_MARK_OUT_ARR=(${PLUTO_MARK_OUT//// })
     PLUTO_MARK_IN_ARR=(${PLUTO_MARK_IN//// })
-
+    
     VTI_TUNNEL_ID=${1}
     VTI_REMOTE=${2}
     VTI_LOCAL=${3}
-
+    
     LOCAL_IF="${PLUTO_INTERFACE}"
     VTI_IF="vti${VTI_TUNNEL_ID}"
     # GCP's MTU is 1460, so it's hardcoded
     GCP_MTU="1460"
     # ipsec overhead is 73 bytes, we need to compute new mtu.
     VTI_MTU=$((GCP_MTU-73))
-
+    
     case "${PLUTO_VERB}" in
         up-client)
             ${IP} link add ${VTI_IF} type vti local ${PLUTO_ME} remote ${PLUTO_PEER} okey ${PLUTO_MARK_OUT_ARR[0]} ikey ${PLUTO_MARK_IN_ARR[0]}
             ${IP} addr add ${VTI_LOCAL} remote ${VTI_REMOTE} dev "${VTI_IF}"
             ${IP} link set ${VTI_IF} up mtu ${VTI_MTU}
-
+    
             # Disable IPSEC Policy
             sysctl -w net.ipv4.conf.${VTI_IF}.disable_policy=1
-
+    
             # Enable loosy source validation, if possible. Otherwise disable validation.
             sysctl -w net.ipv4.conf.${VTI_IF}.rp_filter=2 || sysctl -w net.ipv4.conf.${VTI_IF}.rp_filter=0
-
+    
             # If you would like to use VTI for policy-based you shoud take care of routing by yourselv, e.x.
             #if [[ "${PLUTO_PEER_CLIENT}" != "0.0.0.0/0" ]]; then
             #    ${IP} r add "${PLUTO_PEER_CLIENT}" dev "${VTI_IF}"
@@ -432,10 +422,10 @@ interface configuration, including MTU, etc.
             ${IP} tunnel del "${VTI_IF}"
             ;;
     esac
-
+    
     # Enable IPv4 forwarding
     sysctl -w net.ipv4.ip_forward=1
-
+    
     # Disable IPSEC Encryption on local net
     sysctl -w net.ipv4.conf.${LOCAL_IF}.disable_xfrm=1
     sysctl -w net.ipv4.conf.${LOCAL_IF}.disable_policy=1
@@ -472,7 +462,7 @@ Ensure that the following line is in the file:
         ike=aes256gcm16-sha512-modp4096
         esp=aes256gcm16-sha512-modp8192
         authby=psk
-
+    
     conn net-net
         leftupdown="/var/lib/strongswan/ipsec-vti.sh 0 169.254.2.1/30 169.254.2.2/30"
         left=35.204.200.153 # In case of NAT set to internal IP, e.x. 10.164.0.6
