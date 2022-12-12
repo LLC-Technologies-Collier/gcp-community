@@ -1,0 +1,7 @@
+#!/bin/bash
+
+PROJECT_ID=c9h-dev
+NETWORK_NAME=c9h-dev-ipsec
+ROUTER_NAME=${NETWORK_NAME}-router
+FIREWALL_PFX=fw-${NETWORK_NAME}
+REGION=us-west1
